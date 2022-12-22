@@ -1,0 +1,27 @@
+[tool.poetry]
+name = "mmdetection101"
+version = "0.1.0"
+description = ""
+authors = ["amrit"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "3.9.6"
+pydantic = "^1.10.2"
+torch = "^1.13.0"
+torchvision = "^0.14.0"
+mmdet = "^2.26.0"
+
+
+[tool.poetry.group.dev.dependencies]
+black = "^22.10.0"
+isort = "^5.10.1"
+flake8 = "^6.0.0"
+pytest = "^7.2.0"
+openmim = "^0.3.3"
+kaleido = "0.2.1"
+fiftyone = "^0.18.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
