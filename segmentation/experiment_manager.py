@@ -5,7 +5,6 @@ from mmcv.runner import load_checkpoint
 from mmdet.apis import (
     train_detector,
     set_random_seed,
-    inference_detector,
     single_gpu_test,
 )
 from mmdet.models import build_detector
@@ -37,6 +36,14 @@ class ExperimentManager(BaseModel):
             str, Union[primitive_type, List[primitive_type], Dict[str, primitive_type]]
         ]
     ]
+
+    def getValDataloader(self):
+
+        return self.val_dataloader
+
+    def getModel(self):
+
+        return self.model
 
     def getConfigFromPath(
         self,
@@ -207,7 +214,7 @@ class ExperimentManager(BaseModel):
         output_path: Optional[Union[str, Path]],
         show_output: bool = True,
         score_threshold: float = 0.3,
-    ):
+    ) -> ExperimentManager:
 
         # Evaluate on dataset from path
         model = build_dp(self.model, self.config.device, device_ids=self.config.gpu_ids)
