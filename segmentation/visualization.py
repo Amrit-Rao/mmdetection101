@@ -2,118 +2,105 @@ from __future__ import annotations
 import json
 import matplotlib.pyplot as plt
 from pydantic import BaseModel
-from typing import Union, Any, Optional, Tuple
+from typing import Union, Any, Optional, List, Dict
 from pathlib import Path
+from itertools import product
 import numpy as np
 import pandas as pd
 import matplotlib.patches as patches
 from mmdet.apis import single_gpu_test
 from mmdet.utils import build_dp
+import fiftyone as fo
+import fiftyone.core.metadata as md
+import pycocotools.mask as mask
 
 primitive_type = Union[int, float, str, bool]
 
 
 class Visualize(BaseModel):
+
+    iou_threshold: float = 0.5
+    confidence_threshold: float = 0.7
+
     @staticmethod
-    def _IoU(
-        actual_bbox_x: np.array,
-        actual_bbox_y: np.array,
-        actual_bbox_heights: np.array,
-        actual_bbox_widths: np.array,
-        predicted_bbox_x: np.array,
-        predicted_bbox_y: np.array,
-        predicted_bbox_heights: np.array,
-        predicted_bbox_widths: np.array,
+    def _getValuesFromFile(
+        *,
+        dir_path: Union[str, Path],
+        format="coco",
     ):
-        max_bbox_x = np.maximum(actual_bbox_x, predicted_bbox_x)
-        min_bbox_y = np.minimum(actual_bbox_y, predicted_bbox_y)
-        min_bbox_x = np.maximum(
-            actual_bbox_x + actual_bbox_widths, predicted_bbox_x + predicted_bbox_widths
-        )
-        max_bbox_y = np.maximum(
-            actual_bbox_x - actual_bbox_heights, predicted_bbox_x - actual_bbox_widths
-        )
-        intersection = np.multiply(max_bbox_x - min_bbox_x, max_bbox_y - min_bbox_y)
-        union = (
-            np.multiply(actual_bbox_widths, actual_bbox_heights)
-            + np.multiply(predicted_bbox_widths, predicted_bbox_heights)
-            - intersection
-        )
 
-        IoU = np.divide(intersection, union)
-        correctly_predicted = IoU > 0.5
-        return correctly_predicted
+        dataset = fo.load_dataset(dir_path, fmt=format)
+        max_labels = md.get_label_set_size(dataset)
 
-    @staticmethod
-    def _getValuesFromFile(file_path: Union[str, Path]):
-        with open(file_path, "r") as f:
-            config = json.load(f)
-        bbox_x = np.zeros((len(config["annotations"]),))
-        bbox_y = np.zeros((len(config["annotations"]),))
-        bbox_heights = np.zeros((len(config["annotations"]),))
-        bbox_widths = np.zeros((len(config["annotations"]),))
-        for i in range(len(config["annotations"])):
-            bbox_x[i] = config["annotations"][i]["bbox"][0]
-            bbox_y[i] = config["annotations"][i]["bbox"][1]
-            bbox_widths[i] = config["annotations"][i]["bbox"][2]
-            bbox_heights[i] = config["annotations"][i]["bbox"][3]
-        image_height = config["images"][1]["height"]
-        image_width = config["images"][1]["width"]
+        bboxes = [[[] for _ in range(max_labels)] for _ in range(len(dataset))]
 
-        return image_height, image_width, bbox_x, bbox_y, bbox_heights, bbox_widths
+        for i, sample in enumerate(dataset):
+            boxes = md.get_boxes(sample)
+            labels = md.get_labels(sample)
+            for box, label in zip(boxes, labels):
+                coordinates = [box.x1, box.y1, box.x2, box.y2]
+                bbox_obj = BBox(coordinates)
+                bboxes[i][label].append(bbox_obj)
+
+        image_width, image_height = fo.utils.metadata.get_image_size(dataset[0])
+
+        return image_width, image_height, bboxes
 
     @staticmethod
     def _scatter(
-        bbox_widths: np.array,
-        bbox_heights: np.array,
+        bboxes: List,
         is_ground_truth: bool,
-        correctly_predicted: Optional[np.array],
+        correctly_predicted: Optional[List] = None,
     ):
+        plt.clf()
         if is_ground_truth == False:
-            correctly_predicted_widths = bbox_widths[correctly_predicted == True]
-            correctly_predicted_heights = bbox_heights[correctly_predicted == True]
-            incorrectly_predicted_widths = bbox_widths[correctly_predicted == False]
-            incorrectly_predicted_heights = bbox_heights[correctly_predicted == False]
-            plt.scatter(
-                x=correctly_predicted_widths, y=correctly_predicted_heights, color="g"
-            )
-            plt.scatter(
-                x=incorrectly_predicted_widths,
-                y=incorrectly_predicted_heights,
-                color="r",
-            )
+            for i in range(len(bboxes)):
+                if i % 100 == 0:
+                    print(f"Completed {i} out of {len(bboxes)}")
+                for j in range(len(bboxes[i])):
+                    if correctly_predicted[i][j]:
+                        plt.scatter(x=bboxes[i][j][2], y=bboxes[i][j][3], color="g")
+                    else:
+                        plt.scatter(x=bboxes[i][j][2], y=bboxes[i][j][3], color="r")
+
             plt.xlabel("Widths of bboxes")
             plt.ylabel("Heights of bboxes")
             plt.grid()
             plt.legend(["Correctly Predicted", "Incorrectly Predicted"])
             plt.title("Scatter plot of bboxes")
-            plt.show()
             plt.savefig("plots/predictionScatter.png")
+
         else:
-            plt.scatter(
-                x=bbox_widths,
-                y=bbox_widths,
-                color="b",
-            )
+
+            for i in range(len(bboxes)):
+                if i % 100 == 0:
+                    print(f"Completed {i} out of {len(bboxes)}")
+                for j in range(len(bboxes[i])):
+                    plt.scatter(
+                        x=bboxes[i][j][2],
+                        y=bboxes[i][j][3],
+                        color="b",
+                    )
             plt.xlabel("Widths of bboxes")
             plt.ylabel("Heights of bboxes")
             plt.grid()
             plt.title("Scatter plot of bboxes")
-            plt.show()
             plt.savefig("plots/actualScatter.png")
 
     @staticmethod
     def _histogram(
-        bbox_heights: np.array, bbox_widths: np.array, is_ground_truth: bool
+        bboxes: List,
+        is_ground_truth: bool,
     ):
         heights_widths = []
-        for i in range(len(bbox_heights)):
-            heights_widths.append(
-                (
-                    50 * round(bbox_heights[i] / 50),
-                    50 * round(bbox_widths[i] / 50),
+        for i in range(len(bboxes)):
+            for j in range(len(bboxes[i])):
+                heights_widths.append(
+                    (
+                        50 * round(bboxes[i][j][3] / 50),
+                        50 * round(bboxes[i][j][2] / 50),
+                    )
                 )
-            )
         df = pd.DataFrame(heights_widths)
         categories = df.value_counts().index
         counts = df.value_counts().values
@@ -144,39 +131,38 @@ class Visualize(BaseModel):
             plt.savefig("plots/predictedHistogram.png")
 
     @staticmethod
-    def _bboxesDist(
+    def _bboxesLoc(
         image_height: np.array,
         image_width: np.array,
-        bbox_heights: np.array,
-        bbox_widths: np.array,
-        bbox_x: np.array,
-        bbox_y: np.array,
+        bboxes: List,
         is_ground_truth: bool,
-        correctly_predicted: Optional[np.array],
+        correctly_predicted: Optional[List] = None,
     ):
+        """Plots the location of bboxes"""
         fig, ax = plt.subplots(figsize=(image_width / 96, image_height / 96))
         ax.axes.set_aspect("equal")
         if is_ground_truth == False:
-            for i in range(len(bbox_heights)):
-                if correctly_predicted[i] == True:
-                    rect = patches.Rectangle(
-                        (bbox_x[i] - bbox_heights[i], bbox_y[i]),
-                        bbox_widths[i],
-                        bbox_heights[i],
-                        linewidth=0.3,
-                        edgecolor="g",
-                        facecolor="none",
-                    )
-                else:
-                    rect = patches.Rectangle(
-                        (bbox_x[i] - bbox_heights[i], bbox_y[i]),
-                        bbox_widths[i],
-                        bbox_heights[i],
-                        linewidth=0.3,
-                        edgecolor="r",
-                        facecolor="none",
-                    )
-                ax.add_patch(rect)
+            for i in range(len(bboxes)):
+                for j in range(len(bboxes[i])):
+                    if correctly_predicted[i][j]:
+                        rect = patches.Rectangle(
+                            (bboxes[i][j][0] - bboxes[i][j][3], bboxes[i][j][1]),
+                            bboxes[i][j][2],
+                            bboxes[i][j][3],
+                            linewidth=0.3,
+                            edgecolor="g",
+                            facecolor="none",
+                        )
+                    else:
+                        rect = patches.Rectangle(
+                            (bboxes[i][j][0] - bboxes[i][j][3], bboxes[i][j][1]),
+                            bboxes[i][j][2],
+                            bboxes[i][j][3],
+                            linewidth=0.3,
+                            edgecolor="r",
+                            facecolor="none",
+                        )
+                    ax.add_patch(rect)
 
             plt.xlim([0, image_width])
             plt.ylim([0, image_height])
@@ -184,15 +170,16 @@ class Visualize(BaseModel):
             plt.show()
             plt.savefig("plots/predictedBBoxDist.png")
         else:
-            for i in range(len(bbox_heights)):
-                rect = patches.Rectangle(
-                    (bbox_x[i] - bbox_heights[i], bbox_y[i]),
-                    bbox_widths[i],
-                    bbox_heights[i],
-                    linewidth=0.3,
-                    edgecolor="b",
-                    facecolor="none",
-                )
+            for i in range(len(bboxes)):
+                for j in range(len(bboxes[i])):
+                    rect = patches.Rectangle(
+                        (bboxes[i][j][0] - bboxes[i][j][3], bboxes[i][j][1]),
+                        bboxes[i][j][2],
+                        bboxes[i][j][3],
+                        linewidth=0.3,
+                        edgecolor="b",
+                        facecolor="none",
+                    )
                 ax.add_patch(rect)
 
             plt.xlim([0, image_width])
@@ -201,47 +188,101 @@ class Visualize(BaseModel):
             plt.show()
             plt.savefig("plots/actualBBoxDist.png")
 
-    def scatterPlot(
-        self, *, val_json_path: Union[str, Path], val_dataloader: Any, model: Any
+    def _evaluate(
+        self,
+        *,
+        model: Any,
+        val_dataloader: Any,
     ):
-
-        (
-            image_height,
-            image_width,
-            actual_bbox_x,
-            actual_bbox_y,
-            actual_bbox_heights,
-            actual_bbox_widths,
-        ) = self._getValuesFromFile(file_path=val_json_path)
-
         model_dp = build_dp(model, "cuda", device_ids=range(1))
-        results = single_gpu_test(
+        output_bboxes = single_gpu_test(
             model_dp, val_dataloader, show=False, show_score_thr=0.3
         )
-        print(actual_bbox_widths.shape)
+        filtered_bboxes = [
+            [
+                [bbox for bbox in class_bboxes if bbox[4] >= self.confidence_threshold]
+                for class_bboxes in image_bboxes
+            ]
+            for image_bboxes in output_bboxes
+        ]
 
-        # predicted_bbox_x = results[:, 0]
-        # predicted_bbox_y = results[:, 1]
-        # predicted_bbox_widths = results[:, 2]
-        # predicted_bbox_heights = results[:, 3]
+        return filtered_bboxes
 
-        # correctly_predicted = self._IoU(
-        #     actual_bbox_x,
-        #     actual_bbox_y,
-        #     actual_bbox_heights,
-        #     actual_bbox_widths,
-        #     predicted_bbox_x,
-        #     predicted_bbox_y,
-        #     predicted_bbox_heights,
-        #     predicted_bbox_widths,
-        # )
+    def scatterPlot(
+        self,
+        *,
+        dir_path: Union[str, Path],
+        val_dataloader: Any,
+        model: Any,
+    ):
+        actual_bboxes = BBoxesEDA()
+        image_height, image_width, actual_bboxes.bboxes = self._getValuesFromFile(
+            dir_path=dir_path
+        )
+        predicted_bboxes = BBoxesEDA()
+        predicted_bboxes.bboxes = self._evaluate(model, val_dataloader)
 
-        # self._scatter(actual_bbox_widths, actual_bbox_heights, is_ground_truth=True)
-        # self._scatter(
-        #     predicted_bbox_widths,
-        #     predicted_bbox_heights,
-        #     is_ground_truth=False,
-        #     correctly_predicted=correctly_predicted,
-        # )
+        correctly_predicted = predicted_bboxes.compute_iou(actual_bboxes)
 
+        self._scatter(actual_bboxes, is_ground_truth=True)
+        self._scatter(
+            predicted_bboxes,
+            is_ground_truth=False,
+            correctly_predicted=correctly_predicted,
+        )
         return self
+
+
+class BBox(BaseModel):
+    coordinates: Optional[List[float]]
+
+    def __init__(self, coordinates):
+        super().__init__()
+        self.coordinates = coordinates
+
+    def _IoUvalue(self, *, bbox: BBox):
+
+        iou = mask(bbox.coordinates, self.coordinates, True)
+
+        return iou
+
+
+class BBoxesEDA(BaseModel):
+
+    bboxes: Optional[List[List[BBox]]]
+
+    def __init__(self, bboxes) -> None:
+        super().__init__()
+        self.bboxes = bboxes
+
+    def _categories(self) -> int:
+        return len(self.bboxes[0])
+
+    def compute_iou(self, bboxes: BBoxesEDA, threshold: float):
+
+        result = [
+            [
+                [False for _ in range(len(img_class_bboxes))]
+                for img_class_bboxes in img_classes
+            ]
+            for img_classes in self.bboxes
+        ]
+
+        # Iterate through each image of lst1
+        for i, j, k in product(
+            range(len(self.bboxes)),
+            range(len(self.bboxes[i])),
+            range(len(self.bboxes[i][j])),
+        ):
+            bbox1 = self.bboxes[i][j][k]
+            for l, m, n in product(
+                range(len(bboxes.bboxes)),
+                range(len(bboxes.bboxes[l])),
+                range(len(bboxes.bboxes[l][m])),
+            ):
+                bbox2 = bboxes.bboxes[l][m][n]
+                iou = bbox1._IoUvalue(bbox2)
+                if iou > self.bbox_threshold:
+                    result[i][j][k] = True
+                    break
+        return result
