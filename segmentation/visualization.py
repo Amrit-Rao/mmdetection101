@@ -4,15 +4,14 @@ import matplotlib.pyplot as plt
 from pydantic import BaseModel
 from typing import Union, Any, Optional, List, Dict
 from pathlib import Path
-from itertools import product
 import numpy as np
 import pandas as pd
 import matplotlib.patches as patches
 from mmdet.apis import single_gpu_test
 from mmdet.utils import build_dp
 import fiftyone as fo
-import fiftyone.core.metadata as md
 import pycocotools.mask as mask
+import pycocotools.coco as coco
 
 primitive_type = Union[int, float, str, bool]
 
@@ -24,27 +23,36 @@ class Visualize(BaseModel):
 
     @staticmethod
     def _getValuesFromFile(
-        *,
-        dir_path: Union[str, Path],
-        format="coco",
+        *, json_file_path: Union[str, Path], format=fo.types.COCODetectionDataset
     ):
+        coco_dataset_api = coco.COCO(json_file_path)
 
-        dataset = fo.load_dataset(dir_path, fmt=format)
-        max_labels = md.get_label_set_size(dataset)
+        img_info = coco_dataset_api.imgs[1]
+        img_width = img_info["width"]
+        img_height = img_info["height"]
+        # Get all image ids
+        img_ids = coco_dataset_api.getImgIds()
 
-        bboxes = [[[] for _ in range(max_labels)] for _ in range(len(dataset))]
+        # Initialize the list of lists
+        bboxes = [
+            [[] for _ in range(len(coco_dataset_api.cats))] for _ in range(len(img_ids))
+        ]
 
-        for i, sample in enumerate(dataset):
-            boxes = md.get_boxes(sample)
-            labels = md.get_labels(sample)
-            for box, label in zip(boxes, labels):
-                coordinates = [box.x1, box.y1, box.x2, box.y2]
-                bbox_obj = BBox(coordinates)
-                bboxes[i][label].append(bbox_obj)
+        # Iterate over the images
+        for index, img_id in enumerate(img_ids):
+            # Get the annotations for the current image
+            ann_ids = coco_dataset_api.getAnnIds(imgIds=img_id)
+            annotations = coco_dataset_api.loadAnns(ann_ids)
 
-        image_width, image_height = fo.utils.metadata.get_image_size(dataset[0])
+            # Iterate over the annotations
+            for annotation in annotations:
+                label = annotation["category_id"]
+                box = annotation["bbox"]
+                bboxes[index][label].append(
+                    [box[0], box[1], box[0] + box[2], box[1] + box[3]]
+                )
 
-        return image_width, image_height, bboxes
+        return img_height, img_width, bboxes
 
     @staticmethod
     def _scatter(
@@ -211,49 +219,43 @@ class Visualize(BaseModel):
     def scatterPlot(
         self,
         *,
-        dir_path: Union[str, Path],
+        val_file_path: Union[str, Path],
         val_dataloader: Any,
         model: Any,
     ):
         actual_bboxes = BBoxesEDA()
         image_height, image_width, actual_bboxes.bboxes = self._getValuesFromFile(
-            dir_path=dir_path
+            json_file_path=val_file_path,
         )
+
         predicted_bboxes = BBoxesEDA()
-        predicted_bboxes.bboxes = self._evaluate(model, val_dataloader)
-
-        correctly_predicted = predicted_bboxes.compute_iou(actual_bboxes)
-
-        self._scatter(actual_bboxes, is_ground_truth=True)
-        self._scatter(
-            predicted_bboxes,
-            is_ground_truth=False,
-            correctly_predicted=correctly_predicted,
+        predicted_bboxes.bboxes = self._evaluate(
+            model=model,
+            val_dataloader=val_dataloader,
         )
+
+        correctly_predicted = predicted_bboxes.compute_iou(
+            actual_bboxes,
+            self.iou_threshold,
+        )
+
+        # self._scatter(actual_bboxes, is_ground_truth=True)
+        # self._scatter(
+        #     predicted_bboxes,
+        #     is_ground_truth=False,
+        #     correctly_predicted=correctly_predicted,
+        # )
+
+        print(correctly_predicted)
         return self
-
-
-class BBox(BaseModel):
-    coordinates: Optional[List[float]]
-
-    def __init__(self, coordinates):
-        super().__init__()
-        self.coordinates = coordinates
-
-    def _IoUvalue(self, *, bbox: BBox):
-
-        iou = mask(bbox.coordinates, self.coordinates, True)
-
-        return iou
 
 
 class BBoxesEDA(BaseModel):
 
-    bboxes: Optional[List[List[BBox]]]
+    bboxes: Optional[List[List[List[float]]]]
 
-    def __init__(self, bboxes) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self.bboxes = bboxes
 
     def _categories(self) -> int:
         return len(self.bboxes[0])
@@ -268,21 +270,17 @@ class BBoxesEDA(BaseModel):
             for img_classes in self.bboxes
         ]
 
-        # Iterate through each image of lst1
-        for i, j, k in product(
-            range(len(self.bboxes)),
-            range(len(self.bboxes[i])),
-            range(len(self.bboxes[i][j])),
-        ):
-            bbox1 = self.bboxes[i][j][k]
-            for l, m, n in product(
-                range(len(bboxes.bboxes)),
-                range(len(bboxes.bboxes[l])),
-                range(len(bboxes.bboxes[l][m])),
-            ):
-                bbox2 = bboxes.bboxes[l][m][n]
-                iou = bbox1._IoUvalue(bbox2)
-                if iou > self.bbox_threshold:
-                    result[i][j][k] = True
-                    break
+        for i in range(len(self.bboxes)):
+            for j in range(len(self.bboxes[i])):
+                for k in range(len(self.bboxes[i][j])):
+                    bbox1 = self.bboxes[i][j][k]
+
+                    for l in range(len(bboxes.bboxes)):
+                        for m in range(len(bboxes.bboxes[l])):
+                            for n in range(len(bboxes.bboxes[l][m])):
+                                bbox2 = bboxes.bboxes[l][m][n]
+                                iou = coco.iou(bbox1, bbox2, True)
+                                if iou > threshold:
+                                    result[i][j][k] = True
+                                    break
         return result

@@ -1,7 +1,7 @@
 from segmentation import Visualize
 from segmentation import ExperimentManager
 
-dir_path = "data/kitti-coco/validation"
+val_file_path = "data/kitti-coco/validation/labels.json"
 classes = (
     "Car",
     "Cyclist",
@@ -30,7 +30,7 @@ val_dataloader = experiment.getValDataloader()
 
 visualization = Visualize()
 visualization.scatterPlot(
-    dir_path=dir_path,
+    val_file_path=val_file_path,
     val_dataloader=val_dataloader,
     model=model,
 )
