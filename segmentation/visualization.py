@@ -10,16 +10,16 @@ import matplotlib.patches as patches
 from mmdet.apis import single_gpu_test
 from mmdet.utils import build_dp
 import fiftyone as fo
-import pycocotools.mask as mask
 import pycocotools.coco as coco
+from tqdm import tqdm
 
 primitive_type = Union[int, float, str, bool]
 
 
 class Visualize(BaseModel):
 
-    iou_threshold: float = 0.5
-    confidence_threshold: float = 0.7
+    iou_threshold: float = 0.7
+    confidence_threshold: float = 0.9
 
     @staticmethod
     def _getValuesFromFile(
@@ -66,6 +66,7 @@ class Visualize(BaseModel):
                 if i % 100 == 0:
                     print(f"Completed {i} out of {len(bboxes)}")
                 for j in range(len(bboxes[i])):
+
                     if correctly_predicted[i][j]:
                         plt.scatter(x=bboxes[i][j][2], y=bboxes[i][j][3], color="g")
                     else:
@@ -208,7 +209,11 @@ class Visualize(BaseModel):
         )
         filtered_bboxes = [
             [
-                [bbox for bbox in class_bboxes if bbox[4] >= self.confidence_threshold]
+                [
+                    bbox[:4]
+                    for bbox in class_bboxes
+                    if bbox[4] >= self.confidence_threshold
+                ]
                 for class_bboxes in image_bboxes
             ]
             for image_bboxes in output_bboxes
@@ -239,14 +244,13 @@ class Visualize(BaseModel):
             self.iou_threshold,
         )
 
-        # self._scatter(actual_bboxes, is_ground_truth=True)
-        # self._scatter(
-        #     predicted_bboxes,
-        #     is_ground_truth=False,
-        #     correctly_predicted=correctly_predicted,
-        # )
+        self._scatter(actual_bboxes, is_ground_truth=True)
+        self._scatter(
+            predicted_bboxes,
+            is_ground_truth=False,
+            correctly_predicted=correctly_predicted,
+        )
 
-        print(correctly_predicted)
         return self
 
 
@@ -270,7 +274,7 @@ class BBoxesEDA(BaseModel):
             for img_classes in self.bboxes
         ]
 
-        for i in range(len(self.bboxes)):
+        for i in tqdm(range(len(self.bboxes))):
             for j in range(len(self.bboxes[i])):
                 for k in range(len(self.bboxes[i][j])):
                     bbox1 = self.bboxes[i][j][k]
@@ -279,8 +283,32 @@ class BBoxesEDA(BaseModel):
                         for m in range(len(bboxes.bboxes[l])):
                             for n in range(len(bboxes.bboxes[l][m])):
                                 bbox2 = bboxes.bboxes[l][m][n]
-                                iou = coco.iou(bbox1, bbox2, True)
+                                iou = self._calculate_iou(
+                                    bbox1,
+                                    bbox2,
+                                )
                                 if iou > threshold:
                                     result[i][j][k] = True
                                     break
         return result
+
+    @staticmethod
+    def _calculate_iou(
+        bbox1: List[float],
+        bbox2: List[float],
+    ):
+        x1, y1, x2, y2 = bbox1
+        x3, y3, x4, y4 = bbox2
+
+        x_left = max(x1, x3)
+        y_top = max(y1, y3)
+        x_right = min(x2, x4)
+        y_bottom = min(y2, y4)
+
+        if x_right < x_left or y_bottom < y_top:
+            return 0.0
+
+        intersect = (x_right - x_left) * (y_bottom - y_top)
+        union = (x2 - x1) * (y2 - y1) + (x4 - x3) * (y4 - y3) - intersect
+
+        return intersect / union
