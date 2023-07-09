@@ -29,6 +29,16 @@ model = experiment.getModel()
 val_dataloader = experiment.getValDataloader()
 
 visualization = Visualize()
+visualization.histogram(
+    val_file_path=val_file_path,
+    val_dataloader=val_dataloader,
+    model=model,
+)
+visualization.bboxLoc(
+    val_file_path=val_file_path,
+    val_dataloader=val_dataloader,
+    model=model,
+)
 visualization.scatterPlot(
     val_file_path=val_file_path,
     val_dataloader=val_dataloader,
